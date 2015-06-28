@@ -217,9 +217,8 @@ void patchHex(FILE* f) {
         hexOut[j++] = 0x0D; hexOut[j++] = 0x0A;
     }
     printf("patching done!\n");
-    FILE* ff=fopen("log.hex","wb");
-    fwrite(hexOut,1,j,ff);
-    fclose(ff);
+    
+    fwrite(hexOut,1,j,f);
 
     if (line) free(line);
     if (hexOut) free(hexOut);
