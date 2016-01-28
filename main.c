@@ -1,8 +1,8 @@
 /*
-* Created by Dr. Ace Jeangle (support@chalk-elec.com) 
+* Created by Dr. Ace Jeangle (support@chalk-elec.com)
 * Patches EDID information in Intel HEX firmware
 *
-* You can compile source with standard gcc compiler: 
+* You can compile source with standard gcc compiler:
 * gcc main.c -o patch-edid
 *
 * How to use:
@@ -16,71 +16,20 @@
 
 unsigned char edid[256];
 unsigned char* hex;
-unsigned char* hexOut;
+unsigned char* hexFull;
 unsigned char signature[10]={0x00,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0x00,0x17,0x10};
 int edidLen=0;
 int hexLen=0;
 int pos=0;
 int cnt=0;
 
-// "getline" implementation
-size_t getline(unsigned char **lineptr, size_t *n, FILE *stream) {
-    unsigned char *bufptr = NULL;
-    unsigned char *p = bufptr;
-    size_t size;
-    int c;
-
-    if (lineptr == NULL) {
-        return -1;
-    }
-    if (stream == NULL) {
-        return -1;
-    }
-    if (n == NULL) {
-        return -1;
-    }
-    bufptr = *lineptr;
-    size = *n;
-
-    c = fgetc(stream);
-    if (c == EOF) {
-        return -1;
-    }
-    if (bufptr == NULL) {
-        bufptr = malloc(128);
-        if (bufptr == NULL) {
-            return -1;
-        }
-        size = 128;
-    }
-    p = bufptr;
-    while(c != EOF) {
-        if ((p - bufptr) > (size - 1)) {
-            size = size + 128;
-            bufptr = realloc(bufptr, size);
-            if (bufptr == NULL) {
-                return -1;
-            }
-        }
-        *p++ = c;
-        if (c == '\n') {
-            break;
-        }
-        c = fgetc(stream);
-    }
-
-    *p++ = '\0';
-    *lineptr = bufptr;
-    *n = size;
-
-    return p - bufptr - 1;
-}
-
 // Prints short program description and exit
 void printUsage(char* str) {
     puts(str);
     puts("EDID patch tool");
     puts("Usage: patch-edid <firmware.hex> <edid.bin>\n");
+    if (hex) free(hex);
+    if (hexFull) free(hexFull);
     exit(-1);
 }
 
@@ -154,11 +103,8 @@ int findHex() {
 
 // Read hex-file and find position of old EDID, returns 0 if file format is OK
 int readHex(FILE* f) {
-    unsigned char* line = NULL;
-    size_t len = 0;
-    ssize_t read;
     unsigned char tmp;
-    int i;
+    int i,j;
 
     // Calculate length of hex-file
     fseek(f, 0, SEEK_END);
@@ -167,61 +113,67 @@ int readHex(FILE* f) {
     if (hexLen == 0) return -1;
 
     hex = malloc(hexLen/2);
-    hexOut = malloc(hexLen);
+    hexFull = malloc(hexLen);
+    fread(hexFull, 1, hexLen, f);
     cnt = 0;
 
     // Convert HEX to binary and store in "hex" array
-    while ((read = getline(&line, &len, f)) != -1) {
+    for (i = 0; i < hexLen;) {
+        for (j = i; j < hexLen; j++) {
+            if ((hexFull[j] == 0x0D) || (hexFull[j] == 0x0A)) break;
+        }
         // Check line for Intel HEX format rules
-        if (line[0] != ':') return -1;
-        if (hex2uchar(line+1, &tmp)) return -1;
-        if ((2*tmp + 11) != (read - 1)) return -1;
-        for (i=9; i < (read - 4); i+=2) {
-            if (hex2uchar(line+i, &tmp)) return -1;
+        if (hexFull[i] != ':') return -1;
+        if (hex2uchar(hexFull+i+1, &tmp)) return -1;
+        if ((2*tmp + 10) != (j - i - 1)) return -1;
+        for (i += 9; i < (j-2); i += 2) {
+            if (hex2uchar(hexFull+i, &tmp)) return -1;
             hex[cnt++] = tmp;
         }
+        i += 2;
+        while(i < hexLen) {
+            if ((hexFull[i] == 0x0D) || (hexFull[i] == 0x0A)) i++;
+            else break;
+        }
     }
-    pos = findHex();
-    if (pos > 0) printf("Found EDID data in HEX file, patching ...\n");
-
-    if (line) free(line);
-    if (hex) free(hex);
-    fseek(f, 0, SEEK_SET);
     return 0;
 }
 
 // Patch hex-file with new EDID data
 void patchHex(FILE* f) {
-    unsigned char* line = NULL;
-    size_t len = 0;
-    ssize_t read;
     unsigned char tmp,chk;
     int i,j,c;
 
-    j = 0; c = 0;
-    while ((read = getline(&line, &len, f)) != -1) {
-        chk = 0;
-        hexOut[j++] = ':';
-        for (i=1; i < (read - 4); i+=2) {
-            hex2uchar(line+i, &tmp);
-            if (i >= 9) {
-                c++;
-                if ((c >= pos) && (c < (pos+256))) tmp = edid[c-pos];
-            }
-            chk += tmp;
-            uchar2hex(tmp, hexOut+j);
-            j += 2;
+    j = 0; c = 0; chk = 0;
+    for (i = 0; i < hexLen;) {
+        if (hexFull[i] != ':') {
+            i++;
+            continue;
         }
-        chk = ~chk + 1;
-        uchar2hex(chk, hexOut+j); j += 2;
-        hexOut[j++] = 0x0D; hexOut[j++] = 0x0A;
-    }
-    printf("patching done!\n");
-    
-    fwrite(hexOut,1,j,f);
+        i++;
 
-    if (line) free(line);
-    if (hexOut) free(hexOut);
+        hex2uchar(hexFull+i,   &tmp); chk = tmp; j = tmp;
+        hex2uchar(hexFull+i+2, &tmp); chk += tmp;
+        hex2uchar(hexFull+i+4, &tmp); chk += tmp;
+        hex2uchar(hexFull+i+6, &tmp); chk += tmp;
+        i += 8;
+        j = i + j*2;
+
+        for (; i<j; i+=2) {
+            hex2uchar(hexFull+i, &tmp);
+            c++;
+            if ((c >= pos) && (c < (pos+256))) tmp = edid[c-pos];
+            chk += tmp;
+            uchar2hex(tmp, hexFull+i);
+        }
+
+        chk = ~chk + 1;
+        uchar2hex(chk, hexFull+j);
+    }
+
+    printf("patching done!\n");
+
+    fwrite(hexFull,1,hexLen,f);
 }
 
 
@@ -234,14 +186,26 @@ int main(int argc, char** argv) {
 
     if (argc != 3) printUsage("");
 
-    hexFile = fopen(argv[1], "r+");
-    if (hexFile == NULL) printUsage("Error: can't open firmware hex-file");
+    hexFile = fopen(argv[1], "rb");
+    if (hexFile == NULL) printUsage("Error: can't open firmware hex-file!");
     edidFile = fopen(argv[2], "rb");
-    if (edidFile == NULL) printUsage("Error: can't open EDID bin-file");
+    if (edidFile == NULL) printUsage("Error: can't open EDID bin-file!");
 
-    if (readEdid(edidFile) != 0) printUsage("Error: EDID bin-file does not conform to EDID standard");
-    if (readHex(hexFile) != 0) printUsage("Error: firmware hex-file does not conform to Intel HEX format");
-    patchHex(hexFile);
+    if (readEdid(edidFile) != 0) printUsage("Error: EDID bin-file does not conform to EDID standard!");
+    if (readHex(hexFile) != 0) printUsage("Error: firmware hex-file does not conform to Intel HEX format!");
+    pos = findHex();
+    if (pos > 0) {
+        printf("Found EDID data in HEX file, patching ...\n");
+        fclose(hexFile);
+        hexFile = fopen(argv[1], "wb");
+        patchHex(hexFile);
+    }
+    else {
+        printUsage("Error: Can't find EDID data in HEX file!\n");
+    }
+
+    if (hex) free(hex);
+    if (hexFull) free(hexFull);
 
     fclose(hexFile);
     fclose(edidFile);
